@@ -1,3 +1,14 @@
+/*
+代码将建立连接和传输数据分开
+即认为: 在特定时间收到特定类型数据. 比如,在数据传输阶段收到的一定是数据包,而不是SYN/ACK/FIN
+但是,是否可能出现如下情况:
+sender在建立连接阶段发送过多次SYN/ACK, 但receiver在数据传输阶段又接收到其中某个
+对于sender的数据传输阶段也可能出现这样的情况
+
+
+*/
+
+
 #include "rtp.h"
 #include "util.h"
 
@@ -28,15 +39,15 @@ int sock;
 struct sockaddr_in send_addr; // 对方
 struct sockaddr_in lst_addr;  // 监听
 
-char send_buffer[20] = {0}; // 只会发送头部报文
+char send_buffer[200] = {0}; // 只会发送头部报文
 char recv_buffer[20480] = {0};
 char ack_flags[20480] = {0};
 
 // cache 全相联
 // 只使用 [0, window_size - 1]
 // cache_flags = 1 代表 有效位
-rtp_packet_t cache[40];
-char cache_flags[40] = {0};
+rtp_packet_t cache[20010];
+char cache_flags[20010] = {0};
 
 int make_socket(uint16_t port);
 rtp_header_t make_rtp_header(uint32_t seqnum, uint16_t len, uint8_t flags, int type);
@@ -229,6 +240,7 @@ int transfer_data(const char *filename)
             uint32_t check = header_p->checksum;
             header_p->checksum = 0;
 
+            //处理数据报文
             if (header_p->flags == 0 &&
                 header_p->seq_num >= recv_base && header_p->seq_num < recv_base + window_size &&
                 check == compute_checksum(header_p, header_p->length + sizeof(rtp_header_t)))
@@ -361,8 +373,18 @@ int transfer_data(const char *filename)
             // tmp_recv_buffer += (header_p->length + sizeof(rtp_header_t));
             // recv_num -= (header_p->length + sizeof(rtp_header_t));
             //???????????????????????????????????????????????????????
-            tmp_recv_buffer += sizeof(rtp_packet_t);
-            recv_num -= sizeof(rtp_packet_t);
+            if(header_p->flags == 0)
+            {
+                tmp_recv_buffer += sizeof(rtp_packet_t);
+                recv_num -= sizeof(rtp_packet_t);
+            }
+            else
+            {
+                LOG_DEBUG("receive header\n");
+                tmp_recv_buffer += sizeof(rtp_header_t);
+                recv_num -= sizeof(rtp_header_t);
+            }
+            
         }
     }
 }
