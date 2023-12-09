@@ -310,6 +310,7 @@ int transfer_data(const char* filename)
             next_seq_num++;
             
             
+            
             if(first)
             {
                 first = 0;
