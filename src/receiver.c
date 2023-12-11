@@ -8,7 +8,6 @@ sender在建立连接阶段发送过多次SYN/ACK, 但receiver在数据传输阶
 
 */
 
-
 #include "rtp.h"
 #include "util.h"
 
@@ -41,13 +40,11 @@ struct sockaddr_in lst_addr;  // 监听
 
 char send_buffer[200] = {0}; // 只会发送头部报文
 char recv_buffer[20480] = {0};
-char ack_flags[20480] = {0};
+char ack_flags[80000] = {0};
 
-// cache 全相联
-// 只使用 [0, window_size - 1]
-// cache_flags = 1 代表 有效位
-rtp_packet_t cache[20010];
-char cache_flags[20010] = {0};
+// cache
+// ack_flag = 1 代表 有效位
+rtp_packet_t cache[80000];
 
 int make_socket(uint16_t port);
 rtp_header_t make_rtp_header(uint32_t seqnum, uint16_t len, uint8_t flags, int type);
@@ -232,15 +229,18 @@ int transfer_data(const char *filename)
             return -1; // 超时直接退出
         }
 
-        // 注意:此时接收的数据可能有多个数据报文,依次解析
+        // 此时接收的数据可能有多个数据报文,依次解析
         char *tmp_recv_buffer = recv_buffer;
         while (recv_num > 0)
         {
+            LOG_DEBUG("main loop recv_num:%d\n", recv_num);
             rtp_header_t *header_p = (rtp_header_t *)tmp_recv_buffer;
             uint32_t check = header_p->checksum;
             header_p->checksum = 0;
 
-            //处理数据报文
+            LOG_DEBUG("flags:%d seq:%d recv_base:%d\n", header_p->flags, header_p->seq_num, recv_base);
+
+            // 处理数据报文
             if (header_p->flags == 0 &&
                 header_p->seq_num >= recv_base && header_p->seq_num < recv_base + window_size &&
                 check == compute_checksum(header_p, header_p->length + sizeof(rtp_header_t)))
@@ -277,85 +277,30 @@ int transfer_data(const char *filename)
                 // SR
                 else
                 {
-                    // 接收到的 seq_num 与recvbase相等
-                    // 应该更新 recvbase 且 写入文件 更新缓存
-                    if (header_p->seq_num == recv_base)
-                    {
-                        LOG_DEBUG("========seq_num:%d   recv_base:%d\n", header_p->seq_num, recv_base);
-                        // 直接将recv_base部分写入
-                        // LOG_DEBUG("write file:%s len:%d\n", filename, header_p->length);
-                        fwrite(tmp_recv_buffer + sizeof(rtp_header_t), 1, header_p->length, fp);
+                    LOG_DEBUG("cach====seq_num:%d   recv_base:%d\n", header_p->seq_num, recv_base);
+                    ack_flags[header_p->seq_num - seq_num - 1] = 1;
 
-                        ack_flags[header_p->seq_num - seq_num - 1] = 1;
+                    // 缓存
+                    cache[header_p->seq_num - seq_num - 1] = *(rtp_packet_t *)header_p;
 
-                        // 更新窗口
-                        // 将剩下的缓存部分写入
-                        uint32_t tmp_seq_num = header_p->seq_num + 1;
-                        for (uint32_t i = 0; i < window_size; i++)
-                        {
-                            // 遍历查找下一个seq_num
-                            int get = 0;
-                            for (uint32_t j = 0; j < window_size; j++)
-                            {
-                                if (cache_flags[j] == 1 && cache[j].rtp.seq_num == tmp_seq_num)
-                                {
-                                    // cache hit
-                                    LOG_DEBUG("hhit====seq_num:%d   recv_base:%d\n", tmp_seq_num, recv_base);
-                                    fwrite(cache[j].payload, 1, cache[j].rtp.length, fp);
-
-                                    cache_flags[j] = 0;
-                                    tmp_seq_num++;
-
-                                    get = 1;
-
-                                    break;
-                                }
-                            }
-                            // 找不到下一个了,直接退出
-                            if (get == 0)
-                                break;
-
-                            get = 0;
-                        }
-                        recv_base = tmp_seq_num;
-                    }
-                    // 不相等
-                    // 应该写入缓存
-                    else
-                    {
-                        LOG_DEBUG("!!!!====seq_num:%d   recv_base:%d\n", header_p->seq_num, recv_base);
-                        // 标记确认
-                        // 我靠 不要重复缓存!!!!!
-                        if (ack_flags[header_p->seq_num - seq_num - 1] == 0)
-                        {
-                            ack_flags[header_p->seq_num - seq_num - 1] = 1;
-                            // 缓存
-                            for (uint32_t i = 0; i < window_size; i++)
-                            {
-                                if (cache_flags[i] == 0)
-                                {
-                                    LOG_DEBUG("cach====seq_num:%d   recv_base:%d\n", header_p->seq_num, recv_base);
-                                    cache[i] = *(rtp_packet_t *)header_p;
-                                    // 我靠 搞忘标记有效位了
-                                    cache_flags[i] = 1;
-
-                                    break;
-                                }
-                            }
-                        }
-                    }
-
-                    // 收到的报文已经确认过
-                    LOG_DEBUG("ACK      seq_num:%d\n\n", header_p->seq_num);
-                    if (ack_flags[header_p->seq_num - seq_num - 1] == 1)
-                    {
-                        // SR
-                        // 发送ACK
-                        rtp_header_t ack = make_rtp_header(header_p->seq_num, 0, RTP_ACK, 1);
-                        rtp_send((char *)&ack, sizeof(rtp_header_t));
-                    }
+                    // 发送ACK
+                    LOG_DEBUG("ACK send seq_num1:%d\n\n", header_p->seq_num);
+                    rtp_header_t ack = make_rtp_header(header_p->seq_num, 0, RTP_ACK, 1);
+                    rtp_send((char *)&ack, sizeof(rtp_header_t));
                 }
             }
+            // 在窗口之外, 但是已经收到过
+            else if (header_p->flags == 0 &&
+                     check == compute_checksum(header_p, header_p->length + sizeof(rtp_header_t)))
+            {
+                if (ack_flags[header_p->seq_num - seq_num - 1] == 1)
+                {
+                    LOG_DEBUG("ACK send seq_num2:%d\n\n", header_p->seq_num);
+                    rtp_header_t ack = make_rtp_header(header_p->seq_num, 0, RTP_ACK, 1);
+                    rtp_send((char *)&ack, sizeof(rtp_header_t));
+                }
+            }
+
 
             // 检查FIN报文
             if (header_p->flags == RTP_FIN &&
@@ -369,22 +314,24 @@ int transfer_data(const char *filename)
                 return 0;
             }
 
+
+            // SR 写文件、更新recv_base
+            if (mode == 1)
+            {
+                while (ack_flags[recv_base - seq_num - 1] == 1)
+                {
+                    LOG_DEBUG("write... %d\n", recv_base);
+                    fwrite((char *)(cache[recv_base - seq_num - 1].payload), 1,
+                           cache[recv_base - seq_num - 1].rtp.length, fp);
+                    recv_base++;
+                }
+                LOG_DEBUG("write over\n");
+            }
+
+
             // 更新recv_buffer
-            // tmp_recv_buffer += (header_p->length + sizeof(rtp_header_t));
-            // recv_num -= (header_p->length + sizeof(rtp_header_t));
-            //???????????????????????????????????????????????????????
-            if(header_p->flags == 0)
-            {
-                tmp_recv_buffer += sizeof(rtp_packet_t);
-                recv_num -= sizeof(rtp_packet_t);
-            }
-            else
-            {
-                LOG_DEBUG("receive header\n");
-                tmp_recv_buffer += sizeof(rtp_header_t);
-                recv_num -= sizeof(rtp_header_t);
-            }
-            
+            tmp_recv_buffer = tmp_recv_buffer + (header_p->length + sizeof(rtp_header_t));
+            recv_num = recv_num - (header_p->length + sizeof(rtp_header_t));
         }
     }
 }
