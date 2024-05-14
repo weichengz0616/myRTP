@@ -1,2 +1,7 @@
-[![Review Assignment Due Date](https://classroom.github.com/assets/deadline-readme-button-24ddc0f5d75046c5622901739e7c5dd533143b0c8e959d652212380cedb1ea36.svg)](https://classroom.github.com/a/W4MZkKgl)
-# 2023-Lab2-RTP-Template
+# myRTP
+
+2023PKU网络课程Lab
+
+一个基于UDP的可靠传输协议
+
+用法见[这里](https://edu.n2sys.cn/#/tut_lab/lv2/README)
